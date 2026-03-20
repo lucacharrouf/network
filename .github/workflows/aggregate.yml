@@ -1,0 +1,33 @@
+name: Aggregate Feeds
+
+on:
+  schedule:
+    - cron: "*/30 * * * *" # Every 30 minutes
+  workflow_dispatch: # Allow manual trigger
+
+permissions:
+  contents: write
+
+jobs:
+  aggregate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Run aggregation
+        run: npm run aggregate
+
+      - name: Commit updated feed
+        run: |
+          git config user.name "feel-bot"
+          git config user.email "bot@feel-network.dev"
+          git add public/explore-feed.json
+          git diff --staged --quiet || git commit -m "Update explore feed [skip ci]"
+          git push

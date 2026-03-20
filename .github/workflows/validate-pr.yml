@@ -1,0 +1,78 @@
+name: Validate Registry PR
+
+on:
+  pull_request:
+    paths:
+      - registry.json
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Validate new entries
+        run: |
+          node --loader tsx -e "
+          import { readFileSync } from 'fs';
+          import { z } from 'zod';
+
+          const registry = JSON.parse(readFileSync('registry.json', 'utf-8'));
+
+          const entrySchema = z.object({
+            domain: z.string().regex(/^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z]{2,})+$/),
+            feed_url: z.string().url().startsWith('https://'),
+            added: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+          });
+
+          const registrySchema = z.object({
+            sites: z.array(entrySchema),
+          });
+
+          const result = registrySchema.safeParse(registry);
+          if (!result.success) {
+            console.error('Invalid registry.json:');
+            for (const issue of result.error.issues) {
+              console.error('  -', issue.path.join('.') + ':', issue.message);
+            }
+            process.exit(1);
+          }
+
+          // Check for duplicate domains
+          const domains = result.data.sites.map(s => s.domain);
+          const dupes = domains.filter((d, i) => domains.indexOf(d) !== i);
+          if (dupes.length > 0) {
+            console.error('Duplicate domains:', dupes.join(', '));
+            process.exit(1);
+          }
+
+          // Fetch and validate each new site's feed.json
+          for (const site of result.data.sites) {
+            console.log('Checking', site.feed_url, '...');
+            try {
+              const res = await fetch(site.feed_url, { signal: AbortSignal.timeout(10000) });
+              if (!res.ok) {
+                console.error('  ✗', site.domain, ': HTTP', res.status);
+                process.exit(1);
+              }
+              const json = await res.json();
+              if (json.profile?.domain !== site.domain) {
+                console.error('  ✗', site.domain, ': profile.domain mismatch');
+                process.exit(1);
+              }
+              console.log('  ✓', site.domain);
+            } catch (err) {
+              console.error('  ✗', site.domain, ':', err.message);
+              process.exit(1);
+            }
+          }
+
+          console.log('All entries valid!');
+          "
